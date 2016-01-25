@@ -7,7 +7,7 @@
 
 #options("xtable.sanitize.text.function" = identity)
 options("shiny.maxRequestSize" = -1)
-options("bitmapType" = "cairo")
+#options("bitmapType" = "cairo")
 #options(shiny.reactlog = FALSE)
 
 ##Turn off experimental
@@ -33,9 +33,6 @@ if( Sys.getenv('root') != '' ) {
 
 
 shinyServer(function(input, output, clientData, session) {
-	
-  #Test if png is working, require x11 addon on newer Mac OS X if necessary
-  png(tempfile()); plot(1); dev.off()
   
   #Reactive values definition
   subplotSetup <- reactiveValues( )
@@ -43,7 +40,11 @@ shinyServer(function(input, output, clientData, session) {
   GENOMES <- BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
   if( length(GENOMES) ) 
       names(GENOMES) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
-  values <- reactiveValues( grfile=NULL, calcID=NULL, plotMsg=NULL, refFileGrids=NULL, proc=NULL, im=NULL, clusters=NULL, SFsetup=list(), plotHistory=list(), genomes=GENOMES )
+  values <- reactiveValues( 
+      grfile=NULL, calcID=NULL, plotMsg=NULL, refFileGrids=NULL, proc=NULL, 
+      im=NULL, clusters=NULL, SFsetup=list(), plotHistory=list(), genomes=GENOMES,
+      sessionID=gsub('[^A-Za-z0-9]', '_', session$request$HTTP_SEC_WEBSOCKET_KEY) 
+  )
   
   #Source functions
   if( Sys.getenv('web') != '' ) setwd(Sys.getenv('web'))
@@ -54,6 +55,7 @@ shinyServer(function(input, output, clientData, session) {
   
   if( Sys.getenv('root') != '' ) setwd(Sys.getenv('root'))
 	suppressMessages( addResourcePath(prefix='files', directoryPath='./files') )
+	suppressMessages( addResourcePath(prefix='tmp', directoryPath='./tmp') )
   
 	#Debug code: Testing eval statement
   if( Sys.getenv("seqplots_debug", FALSE) ) {
@@ -149,8 +151,29 @@ shinyServer(function(input, output, clientData, session) {
 	    contentType = 'image/png',
 	    alt = "Image cannot be displayed"
       )
-	}, deleteFile = TRUE)
+	}, deleteFile = FALSE)
+	
+	renderPDF <- function(expr, env=parent.frame(), quoted=FALSE) {
+	    func <- shiny::exprToFunction(expr, env, quoted)
+	    function() {
+	        value <- func()
+	        value
+	    }
+	}
+	
+	output$thecanvas <- renderPDF({
+	    list(im=values$im, id=values$plotid)
+	})
   
+	output$pdfLink <- renderUI({
+	    #if( is.null(values$plotid) ) return()
+	    tags$a(
+	        tags$span(icon("file-pdf-o", "fa-lg"), 'PDF'), 
+	        class="btn btn-small btn-primary", href=values$im, 
+	        target='_new', style='margin-left: 5px'
+	   )
+	}) 
+	
 	#rendering data dependant plot controles
 	observe({
 	    if(!is.null(values$grfile)) {
@@ -174,7 +197,7 @@ shinyServer(function(input, output, clientData, session) {
 	#Legend download handler
 	output$downloadLegend <- downloadHandler(
 		filename = function() {
-			paste('Legend_', gsub(' ', '_', Sys.time()), '.pdf', sep='')
+			paste('Legend_', chartr(' :', '_-', Sys.time()), '.pdf', sep='')
 		},
 		content = function(file) {
 			co <- lapply(input$plot_this, function(x) fromJSON(x))
@@ -311,10 +334,10 @@ shinyServer(function(input, output, clientData, session) {
 	  },
 	  content = function( file ) {
 	    if(!nchar(input$clusters) & !nchar(input$sortingord)) stop('Plot heatmap with clusters or ordering first!')
-	    infile <- file.path(
-            'files', 
-            basename(names( values$grfile[fromJSON(input$plot_this[[1]])[2]] ))
-        )
+	      
+	    nam <- basename(names( values$grfile[fromJSON(input$plot_this[[1]])[2]] ))
+	    nam <- dbGetQuery(con, sprintf('SELECT name FROM files WHERE name LIKE "%s.%%"', nam))
+	    infile <- file.path('files', nam)
         
         if(file.exists(infile)) {
             fcon <- file(infile); gr <- rtracklayer::import( fcon ); close(fcon);
@@ -496,8 +519,13 @@ shinyServer(function(input, output, clientData, session) {
   
   #Generate file table for tracks and features with function
   fileSelectionDataTable <- function(type) {
+
+      
     dt_opt <- reactive({
         values$refFileGrids; input$reloadgrid; input$files; input$TR_delfile; input$upload; input$TR_addFile;
+        if( nrow(dbGetQuery(con, paste0("SELECT * FROM files WHERE type='", type, "'"))) == 0 ) {
+            stop('Upload files first.')
+        }
             dat <- I(jsonlite::toJSON(as.matrix(cbind(
                 dbGetQuery(con, paste0("SELECT * FROM files WHERE type='", type, "'"))[,c(-1,-4)],
             se='',  dl='',  rm=''))))
@@ -559,13 +587,19 @@ shinyServer(function(input, output, clientData, session) {
   	session$sendCustomMessage("jsExec", "Shiny.shinyapp.$socket.onclose = function () { $(document.body).addClass('disconnected'); alert('Connection to server lost!'); }")
     session$sendCustomMessage("jsExec", "$('.load_div').fadeOut(1000);")
     session$sendCustomMessage("jsExec", "animateTitle();")
+    
     #Session elem:  "clientData","input","isClosed","onFlush","onFlushed","onSessionEnded","output","request","sendCustomMessage","sendInputMessage" 
     #sapply(ls(session$request), function(x) session$request[[x]])
   	#sapply(names(session$clientData), function(x) session$clientData[[x]])
   	#str(as.list(session$clientData))
+    
     message(Sys.time(), ' -> Running at ', session$request$HTTP_ORIGIN, ', ', session$clientData$url_hostname, ' [', session$request$HTTP_SEC_WEBSOCKET_KEY, ']')
   })
+  session$onSessionEnded(function() { 
+      unlink(file.path(Sys.getenv('root'), 'tmp', isolate(values$sessionID)), recursive=TRUE) 
+  })
   session$onSessionEnded(function() { message(Sys.time(), ' -> Client connection closed', ' [', session$request$HTTP_SEC_WEBSOCKET_KEY, ']' ) })
+
   
   #Server reset action
   observe({
