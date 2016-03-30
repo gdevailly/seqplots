@@ -41,11 +41,18 @@ shinyServer(function(input, output, clientData, session) {
       grfile=NULL, calcID=NULL, plotMsg=NULL, refFileGrids=NULL, proc=NULL, 
       im=NULL, clusters=NULL, SFsetup=list(), plotHistory=list(),
       sessionID=gsub('[^A-Za-z0-9]', '_', session$request$HTTP_SEC_WEBSOCKET_KEY),
-      GENOMES=BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
+      GENOMES=NULL
   )
+  
+  updateGenomes <- function() {
+      gen <- BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
+      if( length(gen) ) 
+          names(gen) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
+      return( gen[!duplicated(gen)] )
+  }    
+
   observe({
-    if( length(values$GENOMES) ) 
-      names(values$GENOMES) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
+      values$GENOMES <- updateGenomes()
   })
   
   #Source functions
@@ -68,6 +75,7 @@ shinyServer(function(input, output, clientData, session) {
   }
   observe({
     updateSelectInput(session, "file_genome", choices = values$GENOMES)
+    updateCheckboxGroupInput(session, 'inst_genomes', choices = unique(installed.genomes()))
   })
   
 	
@@ -510,6 +518,8 @@ shinyServer(function(input, output, clientData, session) {
           
         tab <- dbGetQuery(con, paste0("SELECT * FROM files WHERE type='", type, "' AND name LIKE('%",input$filter_all,"%')"))[,c(-1,-4)]
         if( nrow(tab) < 1 ) {return(p('No files found!'))} 
+        
+        rownames(tab) <- tab$name
         values[[type]] <- tab
         
         #tab$ctime <- as.POSIXct(tab$ctime)
@@ -527,7 +537,8 @@ shinyServer(function(input, output, clientData, session) {
             searchCols=DT::JS('[null,null,null,null,{"search": typeof demo == "undefined" ? null : demo}]'),
             pagingType="full_numbers",
             searchDelay=10,
-            processing = TRUE
+            processing = TRUE,
+            search = list(regex = TRUE)
         )
         
         dt <- DT::datatable(
@@ -603,11 +614,7 @@ shinyServer(function(input, output, clientData, session) {
           sapply(.libPaths(), function(lib) 
               try(remove.packages(input$inst_genomes, lib = lib))
           )
-          updateCheckboxGroupInput(session, 'inst_genomes', choices = installed.genomes())
-          values$GENOMES <- BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
-          if( length(values$GENOMES) ) 
-              names(values$GENOMES) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
-          #updateSelectInput(session, "file_genome", choices = GENOMES)
+          values$GENOMES <- updateGenomes()
       })
   })
   
@@ -621,10 +628,7 @@ shinyServer(function(input, output, clientData, session) {
               input$genomes_file$datapath, repos = NULL, 
               lib=file.path(Sys.getenv('root'), 'genomes'), type='source'
           )
-          updateCheckboxGroupInput(session, 'inst_genomes', choices = installed.genomes())
-          values$GENOMES <- BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
-          if( length(values$GENOMES) ) 
-              names(values$GENOMES) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
+          values$GENOMES <- updateGenomes()
       })
   })
   
@@ -638,10 +642,8 @@ shinyServer(function(input, output, clientData, session) {
               input$avil_geneomes, suppressUpdates=TRUE, ask=FALSE, 
               lib=file.path(Sys.getenv('root'), 'genomes')
           )
-          updateCheckboxGroupInput(session, 'inst_genomes', choices = installed.genomes())
-          values$GENOMES <- BSgenome:::installed.genomes(splitNameParts=TRUE)$provider_version
-          if( length(values$GENOMES) ) 
-              names(values$GENOMES) <- gsub('^BSgenome.', '', BSgenome:::installed.genomes())
+          updateSelectInput(session, 'avil_geneomes', selected = '')
+          values$GENOMES <- updateGenomes()
       })
   })
   
@@ -712,8 +714,7 @@ shinyServer(function(input, output, clientData, session) {
       if(input$selPage==0) return()
       isolate({
           proxy <- DT::dataTableProxy('trackDT')
-          DT::selectRows(proxy, NULL)
-          DT::selectRows(proxy, input$trackDT_rows_current)
+          DT::selectRows(proxy, union(input$trackDT_rows_selected, input$trackDT_rows_current))
       })
   })
   
@@ -744,8 +745,7 @@ shinyServer(function(input, output, clientData, session) {
       if(input$selPageFT==0) return()
       isolate({
           proxy <- DT::dataTableProxy('featureDT')
-          DT::selectRows(proxy, NULL)
-          DT::selectRows(proxy, input$featureDT_rows_current)
+          DT::selectRows(proxy, union(input$featureDT_rows_selected, input$featureDT_rows_current))
       })
   })
   
